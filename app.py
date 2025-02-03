@@ -104,7 +104,7 @@ def save_to_excel(df, output_path):
             max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
             worksheet.set_column(i, i, max_len)
 
-@app.post("/process-zip/")
+@app.post("/upload/")
 async def process_zip_file(file: UploadFile = File(...)):
     if not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="El archivo debe ser un ZIP.")
