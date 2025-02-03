@@ -1,17 +1,23 @@
-from flask import Flask, request, render_template, send_file
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware 
 import pandas as pd
 import re
 import zipfile
 import tempfile
 import os
 from PyPDF2 import PdfReader
-from flask_cors import CORS 
+import uuid
 
+app = FastAPI()
 
-app = Flask(__name__)
-
-CORS(app)
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permite todos los orígenes (en producción, especifica los dominios permitidos)
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos los métodos (GET, POST, etc.)
+    allow_headers=["*"],  # Permite todos los encabezados
+)
 
 def extract_text_from_pdf(pdf_path):
     reader = PdfReader(pdf_path)
@@ -25,26 +31,41 @@ def process_text_to_dataframe(text):
     data = []
 
     saldo_pattern = re.compile(r'^\s*SALDO ANTERIOR\s+([\d,]+\.\d{2})\s*$', re.IGNORECASE)
-    transaction_pattern = re.compile(r'^(\d{2}[A-Z]{3})\s+(\d{2}[A-Z]{3})\s+(.*?)(\s+)([\d,]+\.\d{2})\s*$')
+    transaction_pattern = re.compile(
+        r'^(\d{2}[A-Z]{3})\s+(\d{2}[A-Z]{3})\s+(.*?)(\s+)([\d,]+\.\d{2})\s*$'
+    )
 
     for line in lines:
         line = line.strip()
-        
+
         if saldo_match := saldo_pattern.match(line):
             amount = saldo_match.group(1).replace(',', '')
-            data.append({'FECHA PROC.': None, 'FECHA VALOR': None, 'DESCRIPCION': 'SALDO ANTERIOR', 'CARGOS / DEBE': None, 'ABONOS / HABER': float(amount)})
+            data.append({
+                'FECHA PROC.': None,
+                'FECHA VALOR': None,
+                'DESCRIPCION': 'SALDO ANTERIOR',
+                'CARGOS / DEBE': None,
+                'ABONOS / HABER': float(amount)
+            })
             continue
 
         if trans_match := transaction_pattern.match(line):
             fecha_proc, fecha_valor, descripcion, espacios, monto = trans_match.groups()
             monto = float(monto.replace(',', ''))
             espacios_len = len(espacios)
-            
+
             cargos = monto if espacios_len <= 30 else None
             abonos = monto if espacios_len > 30 else None
+
             descripcion = re.sub(r'\s+', ' ', descripcion).strip()
-            
-            data.append({'FECHA PROC.': fecha_proc, 'FECHA VALOR': fecha_valor, 'DESCRIPCION': descripcion, 'CARGOS / DEBE': cargos, 'ABONOS / HABER': abonos})
+
+            data.append({
+                'FECHA PROC.': fecha_proc,
+                'FECHA VALOR': fecha_valor,
+                'DESCRIPCION': descripcion,
+                'CARGOS / DEBE': cargos,
+                'ABONOS / HABER': abonos
+            })
 
     return pd.DataFrame(data, columns=['FECHA PROC.', 'FECHA VALOR', 'DESCRIPCION', 'CARGOS / DEBE', 'ABONOS / HABER'])
 
@@ -67,53 +88,37 @@ def process_zip(zip_path):
             text = extract_text_from_pdf(pdf_path)
             df = process_text_to_dataframe(text)
             all_data.append(df)
-            all_data.append(pd.DataFrame([['']*5], columns=df.columns))
-            all_data.append(pd.DataFrame([['']*5], columns=df.columns))
+            all_data.append(pd.DataFrame([['']*5], columns=df.columns))  
+            all_data.append(pd.DataFrame([['']*5], columns=df.columns))   
 
         return pd.concat(all_data[:-2], ignore_index=True) if all_data else pd.DataFrame()
 
 def save_to_excel(df, output_path):
     with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Consolidado')
+
         workbook = writer.book
         worksheet = writer.sheets['Consolidado']
+
         for i, col in enumerate(df.columns):
             max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
             worksheet.set_column(i, i, max_len)
 
-@app.route('/upload', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return 'No file uploaded', 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return 'No selected file', 400
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_zip:
-            file.save(temp_zip.name)
-            temp_zip_path = temp_zip.name
-        
-        df_consolidado = process_zip(temp_zip_path)
-        output_excel_path = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx').name
-        save_to_excel(df_consolidado, output_excel_path)
-        os.remove(temp_zip_path)
+@app.post("/process-zip/")
+async def process_zip_file(file: UploadFile = File(...)):
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un ZIP.")
+ 
+    temp_zip_path = f"/tmp/{uuid.uuid4()}.zip"
+    with open(temp_zip_path, "wb") as temp_zip:
+        temp_zip.write(await file.read())
+    df_consolidado = process_zip(temp_zip_path)
 
-        return send_file(output_excel_path, as_attachment=True, download_name='output.xlsx')
-    
-    return '''
-    <!doctype html>
-    <html>
-        <body>
-            <h1>Subir archivo ZIP</h1>
-            <form method="post" enctype="multipart/form-data">
-                <input type="file" name="file">
-                <input type="submit" value="Procesar">
-            </form>
-        </body>
-    </html>
-    '''
+    temp_excel_path = f"/tmp/{uuid.uuid4()}.xlsx"
+    save_to_excel(df_consolidado, temp_excel_path)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    return FileResponse(temp_excel_path, filename="output.xlsx")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
