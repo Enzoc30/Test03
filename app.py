@@ -13,7 +13,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://enzoc30.github.io", "http://localhost:8080", "https://render-flaskapp-test03.onrender.com"],
+    allow_origins=["https://enzoc30.github.io", "http://localhost:8080/Frontend_Test03/", "https://render-flaskapp-test03.onrender.com"],
     allow_credentials=True,
     allow_methods=["*"],  # Permite todos los métodos (GET, POST, etc.)
     allow_headers=["*"],  # Permite todos los encabezados
