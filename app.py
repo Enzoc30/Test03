@@ -119,6 +119,12 @@ async def process_zip_file(file: UploadFile = File(...)):
 
     return FileResponse(temp_excel_path, filename="output.xlsx")
 
+@app.get("/")
+async def maine():
+    return "The deploy is successfull"
+"""
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+"""
